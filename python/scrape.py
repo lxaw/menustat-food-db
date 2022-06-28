@@ -30,6 +30,9 @@ from threading import Lock
 # mmap for file reading
 import mmap
 
+# dealing with dirs
+import os
+
 # Required headers to use BS4
 kHEADERS = requests.utils.default_headers()
 kEMAIL = "youremail@gmail.com"
@@ -66,7 +69,8 @@ def strFormatQuery(strQuery):
     #
     dictSpecialChars = {
         '&':'%26',
-        '?':'%3F'
+        '?':'%3F',
+        '#':'%23'
     }
 
     # convert tabs to spaces
@@ -118,9 +122,6 @@ def strGetFirstImgLink(query):
 #
 def voidDownloadImgFromLink(strFilePath,strLink):
     # save to file
-    # CHECK IF FILE PATH HAS '\' CHARACTERS
-    # IF SO, NEED TO REMOVE!
-    strFilePath = strFilePath.replace('\\','~')
 
     with open(strFilePath,'wb') as f:
         f.write(requests.get(strLink).content)
@@ -212,21 +213,15 @@ def listParseFile(strFileName,intDivisions):
                     intListInnerIndex = 0
     return listRet
 
-# returns names of format
-# a_really_long_name
-def strSlugName(strName):
-    # get rid of bad path things, like '/'
-    strName = strName.lower()
-    strName = re.sub('\t','___',strName)
-    strName = re.sub(' ','_',strName)
-    strName = re.sub('\n','',strName)
-    strName = strName.replace('/','~')
-    return strName
+# removes non alphanumeric characters
+#
+def strRemoveNonAlphaNumeric(strName):
+    return re.sub('[^0-9a-zA-Z]','',strName)
 
 # BAD DESIGN: Global Variable to count how many requests made.
 # At moment (05/19/22) don't know better option.
 # When you hit >= kMAX_REQUESTS_AT_TIME, pause the threads.
-kMAX_REQUESTS_AT_TIME = 50
+kMAX_REQUESTS_AT_TIME = 150
 CURRENT_REQUEST_COUNT = 0
 kGLOBAL_REQUEST_COUNT_LOCK = Lock()
 
@@ -242,29 +237,61 @@ def voidWorkerProcess(strDirName,listFragment,lockLock):
         global CURRENT_REQUEST_COUNT
         global kMAX_REQUESTS_AT_TIME
 
-        strFileName = strDirName + "/"+strSlugName(listFragment[i])+'.jpeg'
-        try:
+        # find the correct file directory
+        strSubDirName,strFoodName = listFragment[i].split('\t')
+        strSubDirName = strRemoveNonAlphaNumeric(strSubDirName)
+        strFoodName = strRemoveNonAlphaNumeric(strFoodName)
+        strPath = os.path.join(strDirName,strSubDirName,strFoodName + '.jpeg')
 
-            lockLock.acquire()
-            local_counter = CURRENT_REQUEST_COUNT
-            local_counter += 1
-            CURRENT_REQUEST_COUNT = local_counter
-            lockLock.release()
-            # if greater, sleep the thread
-            if(CURRENT_REQUEST_COUNT >= kMAX_REQUESTS_AT_TIME):
-                time.sleep(1.5)
-                # then reset to 0
+        if not os.path.exists(strPath):
+            try:
+
                 lockLock.acquire()
-                CURRENT_REQUEST_COUNT = 0
+                local_counter = CURRENT_REQUEST_COUNT
+                local_counter += 1
+                CURRENT_REQUEST_COUNT = local_counter
+                # if greater, sleep the thread
+                if(CURRENT_REQUEST_COUNT >= kMAX_REQUESTS_AT_TIME):
+                    time.sleep(1.5)
+                    # then reset to 0
+                    CURRENT_REQUEST_COUNT = 0
+
+                else:
+                    # create the file if not exists
+                    #
+                    voidSearchAndDownloadTopImg(listFragment[i],strPath)
                 lockLock.release()
 
-            else:
-                voidSearchAndDownloadTopImg(listFragment[i],strFileName)
+            except Exception as e:
+                print("ERROR WITH {}".format(listFragment[i]))
+                print("Error:\n{}".format(e))
+                lockLock.release()
+                pass
 
-        except Exception as e:
-            print("ERROR WITH {}".format(listFragment[i]))
-            print("Error:\n{}".format(e))
-            pass
+# create the directories to store images in
+#
+def voidCreateDirectories(strTextFilePath,strBaseDirPath):
+    with open(strTextFilePath,'r') as f:
+        # get a list of all the directories in the directory
+        listPrexistingDirs = os.listdir(strBaseDirPath)
+        setDirNames = set()
+        for line in f:
+            strNewDirName = strRemoveNonAlphaNumeric(line.split('\t')[0])
+            # check if the directory is present
+            # if not, make
+            if strNewDirName in listPrexistingDirs:
+                continue
+            else:
+                # create the dir
+                strNewDirPath = os.path.join(strBaseDirPath,strNewDirName)
+                setDirNames.add(strNewDirPath)
+    # now we have all the unique dir names, we make the dirs that are not 
+    # present yet
+    for e in setDirNames:
+        if e in listPrexistingDirs:
+            continue
+        else:
+            os.mkdir(e)
 
 # Downloads imgs using threads.
 # The number of threads depends on the number of cores.
@@ -286,11 +313,14 @@ def voidThreadedProcessing(strTextFileName,strOutDirFolder,intNumThreads,lockLoc
         listThreads[i].join()
 
 if __name__ == "__main__":
-    pass
-    # kIMG_DIR_NAME = "imgs"
-    # kSOURCE_TEXT = "source_data/menustat.txt"
-    # kNUM_CORES =cpu_count()
+    kSRC_FILE_PATH = 'src_data/menustat.txt'
+    kOUT_DIR = 'imgs'
+
+    # first create the dirs to store the images
+    voidCreateDirectories(kSRC_FILE_PATH,kOUT_DIR)
+
+    kNUM_CORES =cpu_count()
     # print("STARTING PROCESSING WITH {} THREADS".format(kNUM_CORES))
-    # voidThreadedProcessing(strTextFileName = kSOURCE_TEXT,
-    #                     strOutDirFolder= kIMG_DIR_NAME,
-    #                     intNumThreads = kNUM_CORES,lockLock = kGLOBAL_REQUEST_COUNT_LOCK)
+    voidThreadedProcessing(strTextFileName =kSRC_FILE_PATH,
+                        strOutDirFolder=kOUT_DIR,
+                        intNumThreads = kNUM_CORES,lockLock = kGLOBAL_REQUEST_COUNT_LOCK)
